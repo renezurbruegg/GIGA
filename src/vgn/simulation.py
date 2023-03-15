@@ -3,19 +3,40 @@ import time
 
 import numpy as np
 import pybullet
-
+import glob
+        
 from vgn.grasp import Label
 from vgn.perception import *
 from vgn.utils import btsim, workspace_lines
 from vgn.utils.transform import Rotation, Transform
 from vgn.utils.misc import apply_noise, apply_translational_noise
 
+RED = '\033[91m'
+END = '\033[0m'
+OK = '\033[92m'
 
+def printok(s):
+    print(OK + s + END)
+def printerr(s):
+    print(RED + s + END)
 class ClutterRemovalSim(object):
-    def __init__(self, scene, object_set, gui=True, seed=None, add_noise=False, sideview=False, save_dir=None, save_freq=8):
+    def __init__(
+        self,
+        scene,
+        object_set,
+        gui=True,
+        seed=None,
+        add_noise=False,
+        sideview=False,
+        save_dir=None,
+        save_freq=8,
+        gripper_urdf="hand.urdf",
+        urdf_root = None,
+        debug = False
+    ):
         assert scene in ["pile", "packed"]
-
-        self.urdf_root = Path("data/urdfs")
+        self.debug = debug
+        self.urdf_root = Path("data/urdfs") if urdf_root is None else Path(urdf_root)
         self.scene = scene
         self.object_set = object_set
         self.discover_objects()
@@ -23,9 +44,8 @@ class ClutterRemovalSim(object):
         self.global_scaling = {
             "blocks": 1.67,
             "google": 0.7,
-            'google_pile': 0.7,
-            'google_packed': 0.7,
-            
+            "google_pile": 0.7,
+            "google_packed": 0.7,
         }.get(object_set, 1.0)
         self.gui = gui
         self.add_noise = add_noise
@@ -33,7 +53,7 @@ class ClutterRemovalSim(object):
 
         self.rng = np.random.RandomState(seed) if seed else np.random
         self.world = btsim.BtWorld(self.gui, save_dir, save_freq)
-        self.gripper = Gripper(self.world)
+        self.gripper = Gripper(self.world, urdfs_path = self.urdf_root, gripper_urdf=gripper_urdf)
         self.size = 6 * self.gripper.finger_depth
         intrinsic = CameraIntrinsic(640, 480, 540.0, 540.0, 320.0, 240.0)
         self.camera = self.world.add_camera(intrinsic, 0.1, 2.0)
@@ -45,6 +65,7 @@ class ClutterRemovalSim(object):
     def discover_objects(self):
         root = self.urdf_root / self.object_set
         self.object_urdfs = [f for f in root.iterdir() if f.suffix == ".urdf"]
+        self.object_urdfs += glob.glob(str(root) + "/**/*.urdf")
 
     def save_state(self):
         self._snapshot_id = self.world.save_state()
@@ -149,43 +170,83 @@ class ClutterRemovalSim(object):
 
         If N is given, the first n viewpoints on a circular trajectory consisting of N points are rendered.
         """
-        tsdf = TSDFVolume(self.size, resolution)
-        high_res_tsdf = TSDFVolume(self.size, 120)
+        if (resolution == -1):
+            print("Passed resolution of -1, will just integrate depth image and not return valid tsdf volume")
+            tsdf = None
+        else:
+            tsdf = TSDFVolume(self.size, resolution)
+            high_res_tsdf = TSDFVolume(self.size, 120)
 
         if self.sideview:
-            origin = Transform(Rotation.identity(), np.r_[self.size / 2, self.size / 2, self.size / 3])
+            origin = Transform(
+                Rotation.identity(), np.r_[self.size / 2, self.size / 2, self.size / 3]
+            )
             theta = np.pi / 3.0
         else:
-            origin = Transform(Rotation.identity(), np.r_[self.size / 2, self.size / 2, 0])
+            origin = Transform(
+                Rotation.identity(), np.r_[self.size / 2, self.size / 2, 0]
+            )
             theta = np.pi / 6.0
         r = 2.0 * self.size
 
         N = N if N else n
         if self.sideview:
             assert n == 1
-            phi_list = [- np.pi / 2.0]
+            phi_list = [-np.pi / 2.0]
         else:
             phi_list = 2.0 * np.pi * np.arange(n) / N
         extrinsics = [camera_on_sphere(origin, r, theta, phi) for phi in phi_list]
 
         timing = 0.0
+        pcs = []
         for extrinsic in extrinsics:
-            depth_img = self.camera.render(extrinsic)[1]
-
+            rgb_img, depth_img, semseg_img = self.camera.render(extrinsic)
             # add noise
             depth_img = apply_noise(depth_img, self.add_noise)
-            
-            tic = time.time()
-            tsdf.integrate(depth_img, self.camera.intrinsic, extrinsic)
-            timing += time.time() - tic
-            high_res_tsdf.integrate(depth_img, self.camera.intrinsic, extrinsic)
+            if resolution == -1:
+                 # RENDER IMAGE
+                rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+                    o3d.geometry.Image(rgb_img),
+                    o3d.geometry.Image(depth_img),
+                    depth_scale=1.0,
+                    depth_trunc=2.0,
+                    convert_rgb_to_intensity=False,
+                )
+
+                intrinsic = o3d.camera.PinholeCameraIntrinsic(
+                    width=self.camera.intrinsic.width,
+                    height=self.camera.intrinsic.height,
+                    fx=self.camera.intrinsic.fx,
+                    fy=self.camera.intrinsic.fy,
+                    cx=self.camera.intrinsic.cx,
+                    cy=self.camera.intrinsic.cy,
+                )
+
+                extrinsic = extrinsic.as_matrix()
+                pc = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic, extrinsic)
+                pcs.append(pc)
+            else:
+                tic = time.time()
+                tsdf.integrate(depth_img, self.camera.intrinsic, extrinsic)
+                timing += time.time() - tic
+                high_res_tsdf.integrate(depth_img, self.camera.intrinsic, extrinsic)
+        if resolution == -1:
+            pc = o3d.geometry.PointCloud()
+            pts = [np.asarray(p.points) for p in pcs]
+            pts = np.concatenate(pts, axis=0)
+            pc.points = o3d.utility.Vector3dVector(pts)
+        else:
+            pc = high_res_tsdf.get_cloud()
         bounding_box = o3d.geometry.AxisAlignedBoundingBox(self.lower, self.upper)
-        pc = high_res_tsdf.get_cloud()
         pc = pc.crop(bounding_box)
 
         return tsdf, pc, timing
 
-    def execute_grasp(self, grasp, remove=True, allow_contact=False):
+    def execute_grasp(self, grasp, remove=True, allow_contact=False, with_target = True):
+        body_poses_init = {}
+        for b in self.world.bodies:
+            body_poses_init[b] = (self.world.bodies[b].name, self.world.bodies[b].get_pose().as_matrix())
+
         T_world_grasp = grasp.pose
         T_grasp_pregrasp = Transform(Rotation.identity(), [0.0, 0.0, -0.05])
         T_world_pregrasp = T_world_grasp * T_grasp_pregrasp
@@ -200,29 +261,87 @@ class ClutterRemovalSim(object):
             T_grasp_retreat = Transform(Rotation.identity(), [0.0, 0.0, -0.1])
             T_world_retreat = T_world_grasp * T_grasp_retreat
 
+
+        # if self.debug:
+        #     pos = T_world_pregrasp.as_matrix()[:3, 3]
+        #     p.addUserDebugLine(pos - y_axis*0.4, pos + y_axis*0.4, (0,1,0))
+        #     p.addUserDebugLine(pos + 0.1*z_axis, pos - 0.1 * z_axis, (0,1, 0))
+        #     p.addUserDebugLine(pos + 0.1*x_axis, pos - 0.1 * x_axis, (0,1, 0))
+
+        #     pos = T_world_grasp.as_matrix()[:3, 3]
+        #     p.addUserDebugLine(pos - y_axis*0.4, pos + y_axis*0.4, (0,0,1))
+        #     p.addUserDebugLine(pos + 0.1*z_axis, pos - 0.1 * z_axis, (0,0, 1))
+        #     p.addUserDebugLine(pos + 0.1*x_axis, pos - 0.1 * x_axis, (0,0, 1))
+
+        #     pos = T_world_retreat.as_matrix()[:3, 3]
+        #     p.addUserDebugLine(pos - y_axis*0.4, pos + y_axis*0.4, (1,0,0))
+        #     p.addUserDebugLine(pos + 0.1*z_axis, pos - 0.1 * z_axis, (1,0, 0))
+        #     p.addUserDebugLine(pos + 0.1*x_axis, pos - 0.1 * x_axis, (1,0, 0))
+
+        # import pdb; pdb.set_trace()
         self.gripper.reset(T_world_pregrasp)
 
+        target_object_id = 0
+        result = None
+
         if self.gripper.detect_contact():
-            result = Label.FAILURE, self.gripper.max_opening_width
+            result = Label.FAILURE, self.gripper.max_opening_width, target_object_id
         else:
             self.gripper.move_tcp_xyz(T_world_grasp, abort_on_contact=True)
             if self.gripper.detect_contact() and not allow_contact:
-                result = Label.FAILURE, self.gripper.max_opening_width
-            else:
-                self.gripper.move(0.0)
-                self.gripper.move_tcp_xyz(T_world_retreat, abort_on_contact=False)
-                if self.check_success(self.gripper):
+                printerr("contact while moving")
+                result = Label.FAILURE, self.gripper.max_opening_width, target_object_id
+                self.gripper.move_tcp_xyz(T_world_grasp, abort_on_contact=False) # Force gripper move to target
+            
+            self.gripper.move(0.0) # Close gipper
+            self.gripper.move_tcp_xyz(T_world_retreat, abort_on_contact=False) # Move to retreat pose
+
+            if self.check_success(self.gripper):
+
+                contacts = self.world.get_contacts(self.gripper.body)
+                target_object = contacts[0].bodyB
+
+                if result is None or result[0] == Label.SUCCESS:
                     result = Label.SUCCESS, self.gripper.read()
-                    if remove:
-                        contacts = self.world.get_contacts(self.gripper.body)
-                        self.world.remove_body(contacts[0].bodyB)
+
+                if target_object.name == "plane":
+                    result = Label.FAILURE, 0
+                    target_object_id = 0
                 else:
-                    result = Label.FAILURE, self.gripper.max_opening_width
+                    target_object_id = list(self.world.bodies.values()).index(target_object)
+
+                for key, obj in self.world.bodies.items():
+                    if obj != target_object and key in body_poses_init:
+                        # get rotation angles
+                        # calculate quat difference
+                        quat_dist = 1 - np.abs(Rotation.from_matrix(body_poses_init[key][1][:3,:3]).as_quat() @ obj.get_pose().rotation.as_quat())
+                        pos_dist = np.linalg.norm(obj.get_pose().translation -  body_poses_init[key][1][:3,-1])
+                        if quat_dist > 0.1 or pos_dist > 0.05:
+                            if self.debug:
+                                printerr("Environment changed!")
+                            result = Label.FAILURE_INTERACTION, 0
+                                        
+                if remove and result[0] == Label.SUCCESS:
+                    contacts = self.world.get_contacts(self.gripper.body)
+                    self.world.remove_body(contacts[0].bodyB)
+            else:
+                result = Label.FAILURE, 0
 
         self.world.remove_body(self.gripper.body)
 
         if remove:
             self.remove_and_wait()
+
+        if self.debug:
+            if result[0] == Label.FAILURE_INTERACTION:
+                printerr("Failed due to environment change!")
+            elif result[0] == Label.SUCCESS:
+                printok("Success!")
+            elif result[0] == Label.FAILURE:
+                printerr("Failed")
+
+        if with_target:
+            return (result[0], result[1], target_object_id)
 
         return result
 
@@ -233,7 +352,7 @@ class ClutterRemovalSim(object):
             self.wait_for_objects_to_rest()
             removed_object = self.remove_objects_outside_workspace()
 
-    def wait_for_objects_to_rest(self, timeout=2.0, tol=0.01):
+    def wait_for_objects_to_rest(self, timeout=4.0, tol=0.01):
         timeout = self.world.sim_time + timeout
         objects_resting = False
         while not objects_resting and self.world.sim_time < timeout:
@@ -266,9 +385,9 @@ class ClutterRemovalSim(object):
 class Gripper(object):
     """Simulated Panda hand."""
 
-    def __init__(self, world):
+    def __init__(self, world, urdfs_path= Path("data/urdfs"),  gripper_urdf="hand.urdf"):
         self.world = world
-        self.urdf_path = Path("data/urdfs/panda/hand.urdf")
+        self.urdf_path = urdfs_path / "panda" / gripper_urdf
 
         self.max_opening_width = 0.08
         self.finger_depth = 0.05

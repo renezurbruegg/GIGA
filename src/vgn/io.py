@@ -7,6 +7,7 @@ import pandas as pd
 from vgn.grasp import Grasp
 from vgn.perception import *
 from vgn.utils.transform import Rotation, Transform
+import os
 
 
 def write_setup(root, size, intrinsic, max_opening_width, finger_depth):
@@ -28,11 +29,17 @@ def read_setup(root):
     return size, intrinsic, max_opening_width, finger_depth
 
 
-def write_sensor_data(root, depth_imgs, extrinsics):
+def write_sensor_data(root, depth_imgs, extrinsics, rgb = None, semseg = None):
     scene_id = uuid.uuid4().hex
     path = root / "scenes" / (scene_id + ".npz")
     assert not path.exists()
-    np.savez_compressed(path, depth_imgs=depth_imgs, extrinsics=extrinsics)
+    kwargs = dict(depth_imgs=depth_imgs, extrinsics=extrinsics)
+    if rgb is not None:
+        kwargs["rgb"] = rgb
+    if semseg is not None:
+        kwargs["semseg"] = semseg
+    np.savez_compressed(path, **kwargs)
+
     return scene_id
 
 
@@ -44,28 +51,51 @@ def write_full_sensor_data(root, depth_imgs, extrinsics, scene_id=None):
     return scene_id
 
 
-def read_sensor_data(root, scene_id):
+def read_sensor_data(root, scene_id, return_rgb = False):
     data = np.load(root / "scenes" / (scene_id + ".npz"))
-    return data["depth_imgs"], data["extrinsics"]
+    if not return_rgb:
+        return data["depth_imgs"], data["extrinsics"]
+    else:
+        return data["depth_imgs"], data["extrinsics"], data["rgb"]
 
 def read_full_sensor_data(root, scene_id):
     data = np.load(root / "full_scenes" / (scene_id + ".npz"))
     return data["depth_imgs"], data["extrinsics"]
 
+def write_grasp(root, scene_id, grasp, label, candidate = None, target = None):
 
-def write_grasp(root, scene_id, grasp, label):
+    if candidate is not None:
+        csv_path = root / "grasps_candidate.csv"
+        n_ang = len(candidate.sucess)
+        if not csv_path.exists():
+            create_csv(
+                csv_path,
+                ["scene_id", "ax_x","ax_y","ax_z","ay_x","ay_y","ay_z","az_x","az_y","az_z", "x", "y", "z", "width", "pos_sample", "n_angles"] + [f"pitch_{i}" for i in range(n_ang)] + [f"label_{i}" for i in range(n_ang)] + ["target"],
+            )
+            
+        pos_sample = np.any(candidate.sucess)
+        target = np.array(candidate.target)
+        target = target[target != 0]
+        if len(target) == 0:
+            target = 0
+        else:
+            target = np.argmax(np.bincount(target))
+        m_width = np.mean(np.asarray(candidate.widths)[np.asarray(candidate.sucess).astype(bool)]) if pos_sample else 0
+
+        append_csv(csv_path, scene_id, *candidate.x_axis, *candidate.y_axis, *candidate.z_axis, *candidate.contact, m_width, int(pos_sample), n_ang, *candidate.pitch_angles, *candidate.sucess, target)
+
     # TODO concurrent writes could be an issue
     csv_path = root / "grasps.csv"
     if not csv_path.exists():
         create_csv(
             csv_path,
-            ["scene_id", "qx", "qy", "qz", "qw", "x", "y", "z", "width", "label"],
+            ["scene_id", "qx", "qy", "qz", "qw", "x", "y", "z", "width", "label", "target"],
         )
+ 
     qx, qy, qz, qw = grasp.pose.rotation.as_quat()
     x, y, z = grasp.pose.translation
     width = grasp.width
-    append_csv(csv_path, scene_id, qx, qy, qz, qw, x, y, z, width, label)
-
+    append_csv(csv_path, scene_id, qx, qy, qz, qw, x, y, z, width, label, target)
 
 def read_grasp(df, i):
     scene_id = df.loc[i, "scene_id"]
@@ -90,9 +120,17 @@ def write_voxel_grid(root, scene_id, voxel_grid):
     np.savez_compressed(path, grid=voxel_grid)
 
 
-def write_point_cloud(root, scene_id, point_cloud, name="point_clouds"):
+def write_point_cloud(root, scene_id, point_cloud, name="point_clouds", **kwargs):
     path = root / name / (scene_id + ".npz")
-    np.savez_compressed(path, pc=point_cloud)
+    np.savez_compressed(path, pc=point_cloud, **kwargs)
+
+def write_point_cloud_non_comp(root, scene_id, point_cloud, name="point_clouds", **kwargs):
+    if not os.path.exists(root / name):
+        os.makedirs(root / name)
+
+    path = root / name / (scene_id + ".npz")
+    np.savez(path, pc=point_cloud, **kwargs)
+
 
 def read_voxel_grid(root, scene_id):
     path = root / "scenes" / (scene_id + ".npz")

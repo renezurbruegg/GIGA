@@ -73,18 +73,21 @@ class TSDFVolume(object):
             length=self.size,
             resolution=self.resolution,
             sdf_trunc=self.sdf_trunc,
-            color_type=o3d.pipelines.integration.TSDFVolumeColorType.NoColor,
+            color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8,
         )
 
-    def integrate(self, depth_img, intrinsic, extrinsic):
+    def integrate(self, depth_img, intrinsic, extrinsic, rgb_img=None):
         """
         Args:
             depth_img: The depth image.
             intrinsic: The intrinsic parameters of a pinhole camera model.
             extrinsics: The transform from the TSDF to camera coordinates, T_eye_task.
         """
+        if rgb_img is None:
+            rgb_img = np.zeros_like(depth_img)[...,None].repeat(3, axis = -1).astype(np.uint8)
+
         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-            o3d.geometry.Image(np.empty_like(depth_img)),
+            o3d.geometry.Image(rgb_img),
             o3d.geometry.Image(depth_img),
             depth_scale=1.0,
             depth_trunc=2.0,
@@ -101,28 +104,35 @@ class TSDFVolume(object):
         )
 
         extrinsic = extrinsic.as_matrix()
-
         self._volume.integrate(rgbd, intrinsic, extrinsic)
 
     def get_grid(self):
         # TODO(mbreyer) very slow (~35 ms / 50 ms of the whole pipeline)
-        shape = (1, self.resolution, self.resolution, self.resolution)
+        shape = (3, self.resolution, self.resolution, self.resolution)
         tsdf_grid = np.zeros(shape, dtype=np.float32)
-        voxels = self._volume.extract_voxel_grid().get_voxels()
+        voxels = self._volume.extract_voxel_grid()
+        voxels = voxels.get_voxels()
+
         for voxel in voxels:
             i, j, k = voxel.grid_index
             tsdf_grid[0, i, j, k] = voxel.color[0]
+            tsdf_grid[1, i, j, k] = voxel.color[1]
+            tsdf_grid[2, i, j, k] = voxel.color[2]
         return tsdf_grid
 
     def get_cloud(self):
         return self._volume.extract_point_cloud()
 
 
-def create_tsdf(size, resolution, depth_imgs, intrinsic, extrinsics):
+def create_tsdf(size, resolution, depth_imgs, intrinsic, extrinsics, rgb_imgs=None):
     tsdf = TSDFVolume(size, resolution)
     for i in range(depth_imgs.shape[0]):
         extrinsic = Transform.from_list(extrinsics[i])
-        tsdf.integrate(depth_imgs[i], intrinsic, extrinsic)
+        if rgb_imgs is not None:
+            tsdf.integrate(depth_imgs[i], intrinsic, extrinsic, rgb_img = rgb_imgs[i])
+        else:
+            tsdf.integrate(depth_imgs[i], intrinsic, extrinsic)
+
     return tsdf
 
 

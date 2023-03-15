@@ -20,6 +20,9 @@ class BtWorld(object):
         sim_time: Virtual time elpased since the last simulation reset.
     """
 
+    def get_client(self):
+        return self.p
+
     def __init__(self, gui=True, save_dir=None, save_freq=8):
         connection_mode = pybullet.GUI if gui else pybullet.DIRECT
         self.p = bullet_client.BulletClient(connection_mode)
@@ -79,14 +82,15 @@ class BtWorld(object):
 
     def step(self):
         self.p.stepSimulation()
-        
-        
+
         if self.gui:
             time.sleep(self.dt)
         if self.save_dir:
             if self.sim_step % self.save_freq == 0:
                 mesh_pose_dict = get_mesh_pose_dict_from_world(self, self.p._client)
-                with open(os.path.join(self.save_dir, f'{self.sim_step:08d}.pkl'), 'wb') as f:
+                with open(
+                    os.path.join(self.save_dir, f"{self.sim_step:08d}.pkl"), "wb"
+                ) as f:
                     pickle.dump(mesh_pose_dict, f)
 
         self.sim_time += self.dt
@@ -311,7 +315,8 @@ class Camera(object):
         depth = (
             1.0 * self.far * self.near / (self.far - (self.far - self.near) * z_buffer)
         )
-        return rgb, depth
+        segmentation = result[4]
+        return rgb, depth, segmentation
 
 
 def _build_projection_matrix(intrinsic, near, far):
