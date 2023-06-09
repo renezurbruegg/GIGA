@@ -158,6 +158,14 @@ def main(args, rank):
             for _ in range(args.grasps_per_scene):
                 # sample and evaluate a grasp point
                 point, normal = sample_grasp_point(pc, finger_depth)
+
+                    
+                print("DEBUG DRAWING")
+                point, normal = sample_grasp_point_contact(pc, horizontal_percentile=args.horizontal_percentile)
+
+  # draw line with contact points and surface normal using pybullet
+                sim.world.p.addUserDebugLine(point, point + normal*0.5, (1,0,0))
+
                 grasp, label, target = evaluate_grasp_point(sim, point, normal)
 
                 # store the sample
@@ -169,6 +177,7 @@ def main(args, rank):
 
                 for point,normal in zip(points, normals):
                     grasp, label, candidate = evaluate_grasp_point_contact(sim, point, normal, num_rotations=args.num_rotations, debug=args.debug)
+
                     if np.any(label):
                         succ += 1
                     for g,l in zip(grasp, label):
@@ -182,9 +191,14 @@ def main(args, rank):
                     if _ % 20 == 19:
                         print(f"Worker: {rank}, Grasp: {_}/{ args.grasps_per_scene}")
                     # sample and evaluate a grasp point
-                    point, normal = sample_grasp_point_contact(pc, horizontal_percentile=args.horizontal_percentile)
-                    grasp, label, candidate= evaluate_grasp_point_contact(sim, point, normal, num_rotations=args.num_rotations, debug=args.debug)
 
+                    print("DEBUG DRAWING")
+
+                    point, normal = sample_grasp_point_contact(pc, horizontal_percentile=args.horizontal_percentile)
+                    # draw line with contact points and surface normal using pybullet
+                    sim.world.p.addUserDebugLine(point, point + normal*0.5, (1,0,0))
+                    grasp, label, candidate= evaluate_grasp_point_contact(sim, point, normal, num_rotations=args.num_rotations, debug=args.debug)
+                    
                     for i, (g,l) in enumerate(zip(grasp, label)):
                         f_grasp = Grasp(g[0],g[1])
                         # store the sample
@@ -346,7 +360,7 @@ def evaluate_grasp_point_contact(sim, pos, normal, num_rotations=12, debug = Fal
 
         infos.append([tf])
 
-        outcome, width, target = sim.execute_grasp(candidate, remove=False, with_target = True)
+        outcome, width, target = sim.execute_grasp(candidate, remove=False, with_target = True, table_col=not args.disable_table_collision)
 
         outcomes.append(outcome)
         widths.append(width)
@@ -379,7 +393,7 @@ def evaluate_grasp_point(sim, pos, normal, num_rotations=6):
         ori = R * Rotation.from_euler("z", yaw)
         sim.restore_state()
         candidate = Grasp(Transform(ori, pos), width=sim.gripper.max_opening_width)
-        outcome, width, target = sim.execute_grasp(candidate, remove=False)
+        outcome, width, target = sim.execute_grasp(candidate, remove=False, table_col=not args.disable_table_collision)
         outcomes.append(outcome)
         widths.append(width)
 
@@ -415,10 +429,11 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true")
     
     parser.add_argument("--contact-based", action="store_true")
-    parser.add_argument("--normal-offset", default=0.004, type=float)
+    parser.add_argument("--normal-offset", default=0.006, type=float)
     parser.add_argument("--num-rotations", default=12, type=int)
     parser.add_argument("--sample-furthest", action="store_true")
     parser.add_argument("--horizontal-percentile", default=0.75, type=float)
+    parser.add_argument("--disable-table-collision", default=False, action="store_true")
 
     parser.add_argument("--gripper-urdf", default="hand.urdf", type=str)
     parser.add_argument("--urdf-root", type=str, default="data/urdfs")

@@ -50,6 +50,58 @@ class DatasetVoxelOccGeo(torch.utils.data.Dataset):
         mesh_pose_list = np.load(mesh_pose_list_path, allow_pickle=True)['pc']
         scene = get_scene_from_mesh_pose_list(mesh_pose_list, return_list=False)
         return scene
+    
+
+class DatasetPointsOccGeo(torch.utils.data.Dataset):
+    def __init__(self, root, raw_root, num_point_occ=2048, augment=False, normalize= True):
+        self.root = root
+        self.num_point_occ = num_point_occ
+        self.raw_root = raw_root
+        self.num_th = 32
+        self.df = read_df(raw_root)
+        self.size, _, _, _ = read_setup(raw_root)
+        self.scene_list = OrderedDict()
+        for i in range(len(self.df.index)):
+            scene_id = self.df.loc[i, "scene_id"]
+            self.scene_list[scene_id] = None
+        self.scene_list = list(self.scene_list.keys())
+        self.normalize = normalize
+
+    def __len__(self):
+        return len(self.scene_list)
+
+    def __getitem__(self, i):
+        scene_id = self.scene_list[i]
+        np_file = np.load(self.raw_root / "full_pointcloud" / (scene_id + ".npz"))
+        mask = np_file["pc"][:, -1] > 0.055
+        data = dict(pc = np_file["pc"], normals = np_file["normals"], colors = np_file["colors"])
+        for k in data.keys():
+            data[k] = data[k][mask]
+        # import open3d as o3d
+        # pcd = o3d.geometry.PointCloud()
+        # pcd.points = o3d.utility.Vector3dVector(data["pc"][:, :3])
+        # import pdb; pdb.set_trace()
+        # o3d.visualization.draw_geometries([pcd])
+
+        occ_points, occ, scene = self.sample_occ(scene_id, self.num_point_occ)
+        if self.normalize:
+            occ_points = occ_points / self.size - 0.5
+
+        return data, occ_points, occ, scene
+
+    def sample_occ(self, scene_id, num_point):
+        mesh_pose_list_path = self.raw_root / 'mesh_pose_list' / (scene_id + '.npz')
+        mesh_pose_list = np.load(mesh_pose_list_path, allow_pickle=True)['pc']
+        scene, mesh_list = get_scene_from_mesh_pose_list(mesh_pose_list, return_list=True)
+        points, occ = sample_iou_points(mesh_list, scene.bounds, num_point)
+        return points, occ, scene
+
+    def get_mesh(self, idx):
+        scene_id = self.df.loc[idx, "scene_id"]
+        mesh_pose_list_path = self.raw_root / 'mesh_pose_list' / (scene_id + '.npz')
+        mesh_pose_list = np.load(mesh_pose_list_path, allow_pickle=True)['pc']
+        scene = get_scene_from_mesh_pose_list(mesh_pose_list, return_list=False)
+        return scene
 
 class DatasetVoxelOccGeoROI(torch.utils.data.Dataset):
     def __init__(self,

@@ -30,9 +30,9 @@ class ClutterRemovalSim(object):
         sideview=False,
         save_dir=None,
         save_freq=8,
-        gripper_urdf="hand.urdf",
+        gripper_urdf="hand_sticky.urdf",
         urdf_root = None,
-        debug = False
+        debug = False,
     ):
         assert scene in ["pile", "packed"]
         self.debug = debug
@@ -40,7 +40,6 @@ class ClutterRemovalSim(object):
         self.scene = scene
         self.object_set = object_set
         self.discover_objects()
-
         self.global_scaling = {
             "blocks": 1.67,
             "google": 0.7,
@@ -121,8 +120,8 @@ class ClutterRemovalSim(object):
         urdf = self.urdf_root / "setup" / "box.urdf"
         pose = Transform(Rotation.identity(), np.r_[0.02, 0.02, table_height])
         box = self.world.load_urdf(urdf, pose, scale=1.3)
-
         # drop objects
+        #urdfs = self.rng.choice([f for f in self.object_urdfs if "light_bulb_poisson_001" in str(f)], size=object_count)
         urdfs = self.rng.choice(self.object_urdfs, size=object_count)
         for urdf in urdfs:
             rotation = Rotation.random(random_state=self.rng)
@@ -162,8 +161,8 @@ class ClutterRemovalSim(object):
             else:
                 self.remove_and_wait()
             attempts += 1
-
-    def acquire_tsdf(self, n, N=None, resolution=40):
+                                                     
+    def acquire_tsdf(self, n, N=None, resolution=40, return_camera_pose = False):
         """Render synthetic depth images from n viewpoints and integrate into a TSDF.
 
         If N is None, the n viewpoints are equally distributed on circular trajectory.
@@ -199,6 +198,7 @@ class ClutterRemovalSim(object):
 
         timing = 0.0
         pcs = []
+
         for extrinsic in extrinsics:
             rgb_img, depth_img, semseg_img = self.camera.render(extrinsic)
             # add noise
@@ -225,6 +225,7 @@ class ClutterRemovalSim(object):
                 extrinsic = extrinsic.as_matrix()
                 pc = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic, extrinsic)
                 pcs.append(pc)
+
             else:
                 tic = time.time()
                 tsdf.integrate(depth_img, self.camera.intrinsic, extrinsic)
@@ -234,15 +235,20 @@ class ClutterRemovalSim(object):
             pc = o3d.geometry.PointCloud()
             pts = [np.asarray(p.points) for p in pcs]
             pts = np.concatenate(pts, axis=0)
+            cols = [np.asarray(p.colors) for p in pcs]
+            cols = np.concatenate(cols, axis=0)
             pc.points = o3d.utility.Vector3dVector(pts)
+            pc.colors = o3d.utility.Vector3dVector(cols)
         else:
             pc = high_res_tsdf.get_cloud()
         bounding_box = o3d.geometry.AxisAlignedBoundingBox(self.lower, self.upper)
         pc = pc.crop(bounding_box)
+        if return_camera_pose:
+            return  tsdf, pc, timing, extrinsics
 
         return tsdf, pc, timing
 
-    def execute_grasp(self, grasp, remove=True, allow_contact=False, with_target = True):
+    def execute_grasp(self, grasp, remove=True, allow_contact=False, with_target = True, check_scene = True, table_col=True):
         body_poses_init = {}
         for b in self.world.bodies:
             body_poses_init[b] = (self.world.bodies[b].name, self.world.bodies[b].get_pose().as_matrix())
@@ -280,9 +286,18 @@ class ClutterRemovalSim(object):
 
         # import pdb; pdb.set_trace()
         self.gripper.reset(T_world_pregrasp)
-
         target_object_id = 0
         result = None
+        print(self.gripper.body.uid, "gripper id", "table_col", table_col)
+
+        if not table_col: # Disable table colisions
+            enabled = 0
+            self.world.p.setCollisionFilterPair(0,1,-1,-1,enabled)
+            self.world.p.setCollisionFilterPair(0,1,-1,0,enabled)
+            self.world.p.setCollisionFilterPair(0,1,-1,1,enabled)
+        
+        # self.world.p.setCollisionFilterGroupMask(1,0,0,1)     
+        # import pdb; pdb.set_trace()
 
         if self.gripper.detect_contact():
             result = Label.FAILURE, self.gripper.max_opening_width, target_object_id
@@ -311,15 +326,18 @@ class ClutterRemovalSim(object):
                     target_object_id = list(self.world.bodies.values()).index(target_object)
 
                 for key, obj in self.world.bodies.items():
-                    if obj != target_object and key in body_poses_init:
-                        # get rotation angles
-                        # calculate quat difference
-                        quat_dist = 1 - np.abs(Rotation.from_matrix(body_poses_init[key][1][:3,:3]).as_quat() @ obj.get_pose().rotation.as_quat())
-                        pos_dist = np.linalg.norm(obj.get_pose().translation -  body_poses_init[key][1][:3,-1])
-                        if quat_dist > 0.1 or pos_dist > 0.05:
-                            if self.debug:
-                                printerr("Environment changed!")
-                            result = Label.FAILURE_INTERACTION, 0
+                    print("objects", key, obj.name)
+                if check_scene:
+                    for key, obj in self.world.bodies.items():
+                        if obj != target_object and key in body_poses_init:
+                            # get rotation angles
+                            # calculate quat difference
+                            quat_dist = 1 - np.abs(Rotation.from_matrix(body_poses_init[key][1][:3,:3]).as_quat() @ obj.get_pose().rotation.as_quat())
+                            pos_dist = np.linalg.norm(obj.get_pose().translation -  body_poses_init[key][1][:3,-1])
+                            if quat_dist > 0.1 or pos_dist > 0.05:
+                                if self.debug:
+                                    printerr("Environment changed!")
+                                result = Label.FAILURE_INTERACTION, 0
                                         
                 if remove and result[0] == Label.SUCCESS:
                     contacts = self.world.get_contacts(self.gripper.body)
@@ -332,13 +350,13 @@ class ClutterRemovalSim(object):
         if remove:
             self.remove_and_wait()
 
-        if self.debug:
-            if result[0] == Label.FAILURE_INTERACTION:
-                printerr("Failed due to environment change!")
-            elif result[0] == Label.SUCCESS:
-                printok("Success!")
-            elif result[0] == Label.FAILURE:
-                printerr("Failed")
+        # if self.debug:
+        if result[0] == Label.FAILURE_INTERACTION:
+            printerr("Failed due to environment change!")
+        elif result[0] == Label.SUCCESS:
+            printok("Success!")
+        elif result[0] == Label.FAILURE:
+            printerr("Failed")
 
         if with_target:
             return (result[0], result[1], target_object_id)

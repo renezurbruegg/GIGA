@@ -46,6 +46,8 @@ class Generator3D(object):
                  input_type = None,
                  vol_info = None,
                  vol_bound = None,
+                 normalize = True,
+                 size = 1,
                  simplify_nfaces=None):
         self.model = model.to(device)
         self.points_batch_size = points_batch_size
@@ -59,7 +61,8 @@ class Generator3D(object):
         self.padding = padding
         self.sample = sample
         self.simplify_nfaces = simplify_nfaces
-        
+        self.normalize = normalize
+        self.size = size
         # for pointcloud_crop
         self.vol_bound = vol_bound
         if vol_info is not None:
@@ -80,7 +83,7 @@ class Generator3D(object):
         kwargs = {}
 
         t0 = time.time()
-        
+        vol_bounds = None
         # obtain features for all crops
         if self.vol_bound is not None:
             self.get_crop_bound(inputs)
@@ -89,7 +92,11 @@ class Generator3D(object):
             inputs = add_key(inputs, data.get('inputs.ind'), 'points', 'index', device=device)
             t0 = time.time()
             with torch.no_grad():
-                c = self.model.encode_inputs(inputs)
+                if not self.normalize:
+                    c = self.model.encode_inputs(coords = data["inputs"].squeeze(0), colors = data["colors"].squeeze(0), normals = data["normals"].squeeze(0))
+                else:
+                    c = self.model.encode_inputs(inputs = data["inputs"])
+
         stats_dict['time (encode inputs)'] = time.time() - t0
         
         mesh = self.generate_from_latent(c, stats_dict=stats_dict, **kwargs)
@@ -111,8 +118,9 @@ class Generator3D(object):
 
         t0 = time.time()
         # Compute bounding box size
-        box_size = 1 + self.padding
-        
+        box_size = 1.0  + self.padding
+ 
+
         # Shortcut
         if self.upsampling_steps == 0:
             nx = self.resolution0
@@ -133,6 +141,12 @@ class Generator3D(object):
                 # Normalize to bounding box
                 pointsf = box_size * (pointsf - 0.5)
                 pointsf = torch.FloatTensor(pointsf).to(self.device)
+
+                if not self.normalize:
+                    # pointsf is -0.5,0.5.
+                    # map it to our case
+                    pointsf = (pointsf + 0.5) * self.size
+
                 # Evaluate model and update
                 values = self.eval_points(pointsf, c, **kwargs).cpu().numpy()
                 values = values.astype(np.float64)
@@ -196,8 +210,11 @@ class Generator3D(object):
                 mesh_extractor = MISE(self.resolution0, self.upsampling_steps, threshold)
                 points = mesh_extractor.query()
                 while points.shape[0] != 0:
-                    pp = points / mesh_extractor.resolution
-                    pp = pp * (bb_max - bb_min) + bb_min
+                    if self.normalize:
+                        pp = points / mesh_extractor.resolution
+                        pp = pp * (bb_max - bb_min) + bb_min
+                    else:
+                        pp = points
                     pp = torch.from_numpy(pp).to(self.device)
 
                     values = self.eval_points(pp, c, vol_bound=vol_bound, **kwargs).detach().cpu().numpy()
@@ -339,10 +356,12 @@ class Generator3D(object):
                     occ_hats.append(occ_hat)
                 else: # entire scene
                     pi_in = pi.unsqueeze(0).to(self.device)
+                    
                     pi_in = {'p': pi_in}
                     p_n = {}
                     for key in c.keys():
                         # normalized to the range of [0, 1]
+                        import pdb; pdb.set_trace()
                         p_n[key] = normalize_coord(pi.clone(), self.input_vol, plane=key).unsqueeze(0).to(self.device)
                     pi_in['p_n'] = p_n
                     with torch.no_grad():
