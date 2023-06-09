@@ -36,7 +36,8 @@ def run(
     sideview=False,
     resolution=40,
     silence=False,
-    visualize=False
+    visualize=False,
+    urdf_root = None,
 ):
     """Run several rounds of simulated clutter removal experiments.
 
@@ -46,7 +47,7 @@ def run(
     """
     #sideview=False
     #n = 6
-    sim = ClutterRemovalSim(scene, object_set, gui=sim_gui, seed=seed, add_noise=add_noise, sideview=sideview)
+    sim = ClutterRemovalSim(scene, object_set, gui=sim_gui, seed=seed, add_noise=add_noise, sideview=sideview, urdf_root = urdf_root)
     logger = Logger(logdir, description)
     cnt = 0
     success = 0
@@ -64,7 +65,7 @@ def run(
         logger.log_round(round_id, sim.num_objects)
         total_objs += sim.num_objects
         consecutive_failures = 1
-        last_label = None
+        last_label = Label.SUCCESS
         trial_id = -1
 
         while sim.num_objects > 0 and consecutive_failures < MAX_CONSECUTIVE_FAILURES:
@@ -72,9 +73,9 @@ def run(
             timings = {}
 
             # scan the scene
-            tsdf, pc, timings["integration"] = sim.acquire_tsdf(n=n, N=N, resolution=40)
-            state = argparse.Namespace(tsdf=tsdf, pc=pc)
-            if resolution != 40:
+            tsdf, pc, timings["integration"], cam_pose = sim.acquire_tsdf(n=n, N=N, resolution=resolution, return_camera_pose=True)
+            state = argparse.Namespace(tsdf=tsdf, pc=pc, camera_pose=cam_pose)
+            if resolution != 40 and resolution != -1:
                 extra_tsdf, _, _ = sim.acquire_tsdf(n=n, N=N, resolution=resolution)
                 state.tsdf_process = extra_tsdf
 
@@ -86,7 +87,9 @@ def run(
                 mesh_pose_list = get_mesh_pose_list_from_world(sim.world, object_set)
                 scene_mesh = get_scene_from_mesh_pose_list(mesh_pose_list)
                 grasps, scores, timings["planning"], visual_mesh = grasp_plan_fn(state, scene_mesh)
-                logger.log_mesh(scene_mesh, visual_mesh, f'round_{round_id:03d}_trial_{trial_id:03d}')
+                # import pdb; pdb.set_trace()
+                visual_mesh.show()
+                # logger.log_mesh(scene_mesh, visual_mesh, f'round_{round_id:03d}_trial_{trial_id:03d}')
             else:
                 grasps, scores, timings["planning"] = grasp_plan_fn(state)
             planning_times.append(timings["planning"])
@@ -98,15 +101,17 @@ def run(
 
             # execute grasp
             grasp, score = grasps[0], scores[0]
-            label, _ = sim.execute_grasp(grasp, allow_contact=True)
+            label, _, _ = sim.execute_grasp(grasp, allow_contact=True, check_scene = False)
             cnt += 1
-            if label != Label.FAILURE:
+            if label == Label.SUCCESS:
                 success += 1
 
             # log the grasp
             logger.log_grasp(round_id, state, timings, grasp, score, label)
+            if hasattr(grasp_plan_fn, 'grasp_cb'):
+                grasp_plan_fn.grasp_cb(label == Label.SUCCESS)
 
-            if last_label == Label.FAILURE and label == Label.FAILURE:
+            if last_label != Label.SUCCESS and label != Label.SUCCESS:
                 consecutive_failures += 1
             else:
                 consecutive_failures = 1
@@ -114,7 +119,14 @@ def run(
                 cons_fail += 1
             last_label = label
         left_objs += sim.num_objects
-    success_rate = 100.0 * success / cnt
+
+        success_rate = 100.0 * success / (cnt+0.0001)
+        declutter_rate = 100.0 * success / (total_objs+0.0001)
+        print('Current success rate: %.2f %%, Declutter rate: %.2f %%' % (success_rate, declutter_rate))
+        if hasattr(grasp_plan_fn, "reset"):
+            grasp_plan_fn.reset()
+            
+    success_rate = 100.0 * success / (cnt+0.0001)
     declutter_rate = 100.0 * success / total_objs
     print('Grasp success rate: %.2f %%, Declutter rate: %.2f %%' % (success_rate, declutter_rate))
     print(f'Average planning time: {np.mean(planning_times)}, total time: {np.mean(total_times)}')
@@ -181,7 +193,8 @@ class Logger(object):
         tsdf, points = state.tsdf, np.asarray(state.pc.points)
         scene_id = uuid.uuid4().hex
         scene_path = self.scenes_dir / (scene_id + ".npz")
-        np.savez_compressed(scene_path, grid=tsdf.get_grid(), points=points)
+        if tsdf is not None:
+            np.savez_compressed(scene_path, grid=tsdf.get_grid(), points=points)
 
         # log grasp
         qx, qy, qz, qw = grasp.pose.rotation.as_quat()
