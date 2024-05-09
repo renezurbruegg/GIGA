@@ -242,7 +242,7 @@ class ClutterRemovalSim(object):
 
         return tsdf, pc, timing
 
-    def execute_grasp(self, grasp, remove=True, allow_contact=False, with_target = True):
+    def execute_grasp(self, grasp, remove=True, allow_contact=False, with_target = True, table_col = True):
         body_poses_init = {}
         for b in self.world.bodies:
             body_poses_init[b] = (self.world.bodies[b].name, self.world.bodies[b].get_pose().as_matrix())
@@ -281,6 +281,12 @@ class ClutterRemovalSim(object):
         # import pdb; pdb.set_trace()
         self.gripper.reset(T_world_pregrasp)
 
+        if not table_col: # Disable table colisions
+            enabled = 0
+            self.world.p.setCollisionFilterPair(0,self.gripper.body.uid,-1,-1,enabled)
+            self.world.p.setCollisionFilterPair(0,self.gripper.body.uid,-1,0,enabled)
+            self.world.p.setCollisionFilterPair(0,self.gripper.body.uid,-1,1,enabled)
+
         target_object_id = 0
         result = None
 
@@ -288,9 +294,14 @@ class ClutterRemovalSim(object):
             result = Label.FAILURE, self.gripper.max_opening_width, target_object_id
         else:
             self.gripper.move_tcp_xyz(T_world_grasp, abort_on_contact=True)
-            if self.gripper.detect_contact() and not allow_contact:
-                printerr("contact while moving")
-                result = Label.FAILURE, self.gripper.max_opening_width, target_object_id
+            contacts = self.gripper.detect_contact()
+            if contacts and not allow_contact:
+                for c in contacts:
+                    if c.bodyB.name != "plane" and c.bodyA.name != "plane":
+                        result = Label.FAILURE, self.gripper.max_opening_width, target_object_id
+                    # else ignore collsision
+
+                # result = Label.FAILURE, self.gripper.max_opening_width, target_object_id
                 self.gripper.move_tcp_xyz(T_world_grasp, abort_on_contact=False) # Force gripper move to target
             
             self.gripper.move(0.0) # Close gipper
@@ -310,18 +321,20 @@ class ClutterRemovalSim(object):
                 else:
                     target_object_id = list(self.world.bodies.values()).index(target_object)
 
-                for key, obj in self.world.bodies.items():
-                    if obj != target_object and key in body_poses_init:
-                        # get rotation angles
-                        # calculate quat difference
-                        quat_dist = 1 - np.abs(Rotation.from_matrix(body_poses_init[key][1][:3,:3]).as_quat() @ obj.get_pose().rotation.as_quat())
-                        pos_dist = np.linalg.norm(obj.get_pose().translation -  body_poses_init[key][1][:3,-1])
-                        if quat_dist > 0.1 or pos_dist > 0.05:
-                            if self.debug:
-                                printerr("Environment changed!")
-                            result = Label.FAILURE_INTERACTION, 0
+                if result[0] == Label.SUCCESS:
+                    for key, obj in self.world.bodies.items():
+                        if obj != target_object and key in body_poses_init:
+                            # get rotation angles
+                            # calculate quat difference
+                            quat_dist = 1 - np.abs(Rotation.from_matrix(body_poses_init[key][1][:3,:3]).as_quat() @ obj.get_pose().rotation.as_quat())
+                            pos_dist = np.linalg.norm(obj.get_pose().translation -  body_poses_init[key][1][:3,-1])
+                            if quat_dist > 0.1 or pos_dist > 0.05:
+                                if self.debug:
+                                    printerr("Environment changed!")
+                                result = Label.FAILURE_INTERACTION, self.gripper.read()
+                                break
                                         
-                if remove and result[0] == Label.SUCCESS:
+                if remove and result[0] != Label.FAILURE:
                     contacts = self.world.get_contacts(self.gripper.body)
                     self.world.remove_body(contacts[0].bodyB)
             else:
@@ -456,11 +469,8 @@ class Gripper(object):
                 return
 
     def detect_contact(self, threshold=5):
-        if self.world.get_contacts(self.body):
-            return True
-        else:
-            return False
-
+        return self.world.get_contacts(self.body)
+    
     def move(self, width):
         self.joint1.set_position(0.5 * width)
         self.joint2.set_position(0.5 * width)

@@ -12,6 +12,9 @@ import torch.nn.functional as F
 
 from vgn.dataset_voxel import DatasetVoxel
 from vgn.networks import get_network, load_network
+import wandb
+
+wandb.init(project='giga_aff_local', sync_tensorboard=True)
 
 LOSS_KEYS = ['loss_all', 'loss_qual', 'loss_rot', 'loss_width']
 
@@ -140,7 +143,7 @@ def create_train_val_loaders(root, root_raw, batch_size, val_split, augment, kwa
 def prepare_batch(batch, device):
     pc, (label, rotations, width), pos = batch
     pc = pc.float().to(device)
-    label = label.float().to(device)
+    label = (label > 0).float().to(device)
     rotations = rotations.float().to(device)
     width = width.float().to(device)
     pos.unsqueeze_(1) # B, 1, 3
@@ -255,3 +258,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     print(args)
     main(args)
+    wandb.finish()

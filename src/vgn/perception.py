@@ -73,7 +73,7 @@ class TSDFVolume(object):
             length=self.size,
             resolution=self.resolution,
             sdf_trunc=self.sdf_trunc,
-            color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8,
+            color_type=o3d.pipelines.integration.TSDFVolumeColorType.NoColor,
         )
 
     def integrate(self, depth_img, intrinsic, extrinsic, rgb_img=None):
@@ -87,7 +87,8 @@ class TSDFVolume(object):
             rgb_img = np.zeros_like(depth_img)[...,None].repeat(3, axis = -1).astype(np.uint8)
 
         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-            o3d.geometry.Image(rgb_img),
+            o3d.geometry.Image(np.empty_like(depth_img)),
+            # o3d.geometry.Image(rgb_img),
             o3d.geometry.Image(depth_img),
             depth_scale=1.0,
             depth_trunc=2.0,
@@ -106,19 +107,57 @@ class TSDFVolume(object):
         extrinsic = extrinsic.as_matrix()
         self._volume.integrate(rgbd, intrinsic, extrinsic)
 
+
+    def index_of(self, x, y, z):
+        return x * self._volume.resolution*self._volume.resolution + y * self._volume.resolution + z
+    
     def get_grid(self):
         # TODO(mbreyer) very slow (~35 ms / 50 ms of the whole pipeline)
-        shape = (3, self.resolution, self.resolution, self.resolution)
+        shape = (1, self.resolution, self.resolution, self.resolution)
         tsdf_grid = np.zeros(shape, dtype=np.float32)
-        voxels = self._volume.extract_voxel_grid()
-        voxels = voxels.get_voxels()
+        # print("extracting grid")
+        # print("calling o3d")
+        # c++ source code
+        #
+        # inline int IndexOf(int x, int y, int z) const {
+        #     return x * resolution_ * resolution_ + y * resolution_ + z;
+        # }
+        # for (int x = 0; x < resolution_; x++) {
+        #     for (int y = 0; y < resolution_; y++) {
+        #         for (int z = 0; z < resolution_; z++) {
+        #             const int ind = IndexOf(x, y, z);
+        #             const float f = voxels_[ind].tsdf_;
+        #             const float w = voxels_[ind].weight_;
+        #             sharedvoxels_[ind] = Eigen::Vector2d(f, w);
+        #         }
+        #     }
+        # }
+        if o3d.__version__ > "0.13.0":
+            print("getting grid the new way!")
+            tsdf_vector = np.asarray(self._volume.extract_volume_tsdf()) # Needed to work with open3d > 0.14.1
+            for x in range(self.resolution):
+                for y in range(self.resolution):
+                    for z in range(self.resolution):
+                        ind = self.index_of(x, y, z)
 
-        for voxel in voxels:
-            i, j, k = voxel.grid_index
-            tsdf_grid[0, i, j, k] = voxel.color[0]
-            tsdf_grid[1, i, j, k] = voxel.color[1]
-            tsdf_grid[2, i, j, k] = voxel.color[2]
+                        f,w = tsdf_vector[ind][0], tsdf_vector[ind][1]
+                        if w != 0 and f <= 0.98 and f >= -0.98:
+                            tsdf_grid[0, x, y, z] = 0.5*(1 + f) # tsdf value
+
+            return tsdf_grid
+        else:
+            print("getting grid th old way!")
+            shape = (1, self.resolution, self.resolution, self.resolution)
+            tsdf_grid = np.zeros(shape, dtype=np.float32)
+            voxels = self._volume.extract_voxel_grid().get_voxels()
+            for voxel in voxels:
+                i, j, k = voxel.grid_index
+                tsdf_grid[0, i, j, k] = voxel.color[0]
         return tsdf_grid
+
+        # print("done")
+        return tsdf_grid
+
 
     def get_cloud(self):
         return self._volume.extract_point_cloud()

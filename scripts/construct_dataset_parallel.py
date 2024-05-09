@@ -50,8 +50,8 @@ def main(args):
     if args.single_view:
         print('Loading first view only!')
     # create directory of new dataset
-    (args.dataset / "scenes").mkdir(parents=True)
-    (args.dataset / "point_clouds").mkdir(parents=True)
+    (args.dataset / "scenes").mkdir(parents=True, exist_ok=True)
+    (args.dataset / "point_clouds").mkdir(parents=True, exist_ok=True)
 
     global g_num_completed_jobs
     global g_num_total_jobs

@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from vgn.dataset_voxel import DatasetVoxelOccFile
 from vgn.networks import get_network, load_network
 
+
 LOSS_KEYS = ['loss_all', 'loss_qual', 'loss_rot', 'loss_width', 'loss_occ']
 
 def main(args):
@@ -122,8 +123,13 @@ def main(args):
 
 def create_train_val_loaders(root, root_raw, batch_size, val_split, augment, kwargs):
     # load the dataset
-
-    dataset = DatasetVoxelOccFile(root, root_raw)
+    datasets = [DatasetVoxelOccFile(Path(rr), Path(rraw)) for rr, rraw in zip(str(root).split(";"), str(root_raw).split(";"))]
+    if len(datasets) > 1:
+        dataset = torch.utils.data.ConcatDataset(datasets)
+        print("Training with multiple datasets", len(datasets))
+    else:
+        dataset = datasets[0]
+    # dataset = DatasetVoxelOccFile(root, root_raw)
     # split into train and validation sets
     val_size = int(val_split * len(dataset))
     train_size = len(dataset) - val_size
@@ -143,6 +149,7 @@ def prepare_batch(batch, device):
     pc = pc.float().to(device)
     label = label.float().to(device)
     rotations = rotations.float().to(device)
+    label = (label > 0).float().to(device)
     width = width.float().to(device)
     pos.unsqueeze_(1) # B, 1, 3
     pos = pos.float().to(device)
@@ -242,6 +249,10 @@ def create_summary_writers(net, device, log_dir):
     train_writer = tensorboard.SummaryWriter(train_path, flush_secs=60)
     val_writer = tensorboard.SummaryWriter(val_path, flush_secs=60)
 
+
+    # wandb.tensorboard.patch(root_logdir=log_dir)
+    # wandb.init(project='giga_local', sync_tensorboard=True)
+
     return train_writer, val_writer
 
 
@@ -253,7 +264,7 @@ if __name__ == "__main__":
     parser.add_argument("--logdir", type=Path, default="data/runs")
     parser.add_argument("--description", type=str, default="")
     parser.add_argument("--savedir", type=str, default="")
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--val-split", type=float, default=0.1)

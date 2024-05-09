@@ -111,8 +111,15 @@ def read_df(root):
     return pd.read_csv(root / "grasps.csv")
 
 
+def read_df_candidates(root):
+    return pd.read_csv(root / "grasps_candidate.csv")
+
 def write_df(df, root):
     df.to_csv(root / "grasps.csv", index=False)
+
+def write_df_candidates(df, root):
+    df.to_csv(root / "grasps_candidate.csv", index=False)
+
 
 
 def write_voxel_grid(root, scene_id, voxel_grid):

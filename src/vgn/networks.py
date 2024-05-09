@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy import ndimage
-from vgn.ConvONets.conv_onet.config import get_model
+from vgn.ConvONets.conv_onet.config import get_model, get_model_contact
 
 def get_network(name):
     models = {
@@ -14,6 +14,7 @@ def get_network(name):
         "giga": GIGA,
         "giga_geo": GIGAGeo,
         "giga_detach": GIGADetach,
+        "giga_contact": GIGAContact,
     }
     return models[name.lower()]()
 
@@ -61,6 +62,33 @@ class ConvNet(nn.Module):
         rot_out = F.normalize(self.conv_rot(x), dim=1)
         width_out = self.conv_width(x)
         return qual_out, rot_out, width_out
+
+
+def GIGAContact():
+    config = {
+        'encoder': 'voxel_simple_local',
+        'encoder_kwargs': {
+            'plane_type': ['xz', 'xy', 'yz'],
+            'plane_resolution': 40,
+            'unet': True,
+            'unet_kwargs': {
+                'depth': 3,
+                'merge_mode': 'concat',
+                'start_filts': 32
+            }
+        },
+        'decoder': 'simple_local',
+        'decoder_tsdf': True,
+        'decoder_kwargs': {
+            'dim': 3,
+            'sample_mode': 'bilinear',
+            'hidden_size': 32,
+            'concat_feat': True
+        },
+        'padding': 0,
+        'c_dim': 32
+    }
+    return get_model_contact(config)
 
 def GIGAAff():
     config = {

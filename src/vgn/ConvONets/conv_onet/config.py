@@ -91,6 +91,81 @@ def get_model(cfg, device=None, dataset=None, **kwargs):
     return model
 
 
+def get_model_contact(cfg, device=None, dataset=None, **kwargs):
+    ''' Return the Occupancy Network model.
+
+    Args:
+        cfg (dict): imported yaml config 
+        device (device): pytorch device
+        dataset (dataset): dataset
+    '''
+    decoder = cfg['decoder']
+    encoder = cfg['encoder']
+    c_dim = cfg['c_dim']
+    decoder_kwargs = cfg['decoder_kwargs']
+    encoder_kwargs = cfg['encoder_kwargs']
+    padding = cfg['padding']
+    if padding is None:
+        padding = 0.1
+    
+    # for pointcloud_crop
+    try: 
+        encoder_kwargs['unit_size'] = cfg['data']['unit_size']
+        decoder_kwargs['unit_size'] = cfg['data']['unit_size']
+    except:
+        pass
+    # local positional encoding
+    if 'local_coord' in cfg.keys():
+        encoder_kwargs['local_coord'] = cfg['local_coord']
+        decoder_kwargs['local_coord'] = cfg['local_coord']
+    if 'pos_encoding' in cfg:
+        encoder_kwargs['pos_encoding'] = cfg['pos_encoding']
+        decoder_kwargs['pos_encoding'] = cfg['pos_encoding']
+
+    tsdf_only = 'tsdf_only' in cfg.keys() and cfg['tsdf_only']
+    detach_tsdf = 'detach_tsdf' in cfg.keys() and cfg['detach_tsdf']
+
+    if tsdf_only:
+        decoders = []
+    else:
+        decoder_qual = models.decoder_dict[decoder](
+            c_dim=c_dim, padding=padding, out_dim=12,
+            **decoder_kwargs
+        )
+        decoder_width = models.decoder_dict[decoder](
+            c_dim=c_dim, padding=padding, out_dim=1,
+            **decoder_kwargs
+        )
+        decoders = [decoder_qual, decoder_width]
+    if cfg['decoder_tsdf'] or tsdf_only:
+        decoder_tsdf = models.decoder_dict[decoder](
+            c_dim=c_dim, padding=padding, out_dim=1,
+            **decoder_kwargs
+        )
+        decoders.append(decoder_tsdf)
+
+    if encoder == 'idx':
+        encoder = nn.Embedding(len(dataset), c_dim)
+    elif encoder is not None:
+        encoder = encoder_dict[encoder](
+            c_dim=c_dim, padding=padding,
+            **encoder_kwargs
+        )
+    else:
+        encoder = None
+
+    if tsdf_only:
+        model = models.ConvolutionalOccupancyNetworkGeometry(
+            decoder_tsdf, encoder, device=device
+        )
+    else:
+        model = models.ConvolutionalOccupancyNetworkContact(
+            decoders, encoder, device=device, detach_tsdf=detach_tsdf
+        )
+
+    return model
+
+
 def get_trainer(model, optimizer, cfg, device, **kwargs):
     ''' Returns the trainer object.
 

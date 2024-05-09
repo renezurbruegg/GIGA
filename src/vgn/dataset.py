@@ -8,22 +8,37 @@ from vgn.utils.transform import Rotation, Transform
 
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, root, augment=False, return_pos=False):
+    def __init__(self, root, root_raw, augment=False, return_pos=False):
         self.root = root
         self.augment = augment
         self.return_pos = return_pos
-        self.df = read_df(root)
+        self.df = read_df(root_raw)
+        voxel_size = 0.3/ 40
+        self.df["x"] /= voxel_size
+        self.df["y"] /= voxel_size
+        self.df["z"] /= voxel_size
+        self.df["width"] /= voxel_size
+        self.df = self.df.rename(columns={"x": "i", "y": "j", "z": "k"})
 
     def __len__(self):
         return len(self.df.index)
 
     def __getitem__(self, i):
-        scene_id = self.df.loc[i, "scene_id"]
-        ori = Rotation.from_quat(self.df.loc[i, "qx":"qw"].to_numpy(np.single))
-        pos = self.df.loc[i, "i":"k"].to_numpy(np.single)
-        width = self.df.loc[i, "width"].astype(np.single)
-        label = self.df.loc[i, "label"].astype(np.long)
-        voxel_grid = read_voxel_grid(self.root, scene_id)
+        done = False
+        while not done:
+            scene_id = self.df.loc[i, "scene_id"]
+            ori = Rotation.from_quat(self.df.loc[i, "qx":"qw"].to_numpy(np.single))
+            pos = self.df.loc[i, "i":"k"].to_numpy(np.single)
+            width = self.df.loc[i, "width"].astype(np.single)
+            label = self.df.loc[i, "label"].astype(np.long)
+
+            try:
+                voxel_grid = read_voxel_grid(self.root, scene_id)        
+                done=True
+            except FileNotFoundError as e:
+                i += 1
+                print("Did not find voxel grid for scene", scene_id, "next", i)
+                done = False
 
         if self.augment:
             voxel_grid, ori, pos = apply_transform(voxel_grid, ori, pos)
@@ -35,7 +50,6 @@ class Dataset(torch.utils.data.Dataset):
         rotations[1] = (ori * R).as_quat()
 
         x, y, index = voxel_grid, (label, rotations, width), index
-
         if self.return_pos:
             return x, y, pos
         else:

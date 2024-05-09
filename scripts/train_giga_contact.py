@@ -10,18 +10,21 @@ import torch
 from torch.utils import tensorboard
 import torch.nn.functional as F
 
-from vgn.dataset import Dataset
+#from vgn.dataset_pc import DatasetPCOcc
+from vgn.dataset_voxel import DatasetVoxelOccContactFile
 from vgn.networks import get_network, load_network
 
-LOSS_KEYS = ['loss_all', 'loss_qual', 'loss_rot', 'loss_width']
+import wandb
+
+LOSS_KEYS = ['loss_all', 'loss_qual', 'loss_width']
 
 def main(args):
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
-    kwargs = {"num_workers": 4, "pin_memory": True} if use_cuda else {}
+    kwargs = {"num_workers": 3, "pin_memory": True} if use_cuda else {}
 
+    # create log directory
     if args.savedir == '':
-        # create log directory
         time_stamp = datetime.now().strftime("%y-%m-%d-%H-%M")
         description = "{}_dataset={},augment={},net={},batch_size={},lr={:.0e},{}".format(
             time_stamp,
@@ -35,6 +38,8 @@ def main(args):
         logdir = args.logdir / description
     else:
         logdir = Path(args.savedir)
+
+    wandb.init(project='giga_retrain', sync_tensorboard=True, name=description)
 
     # create data loaders
     train_loader, val_loader = create_train_val_loaders(
@@ -121,14 +126,8 @@ def main(args):
 
 def create_train_val_loaders(root, root_raw, batch_size, val_split, augment, kwargs):
     # load the dataset
-    datasets = [Dataset(Path(rr), Path(rraw)) for rr, rraw in zip(str(root).split(";"), str(root_raw).split(";"))]
-    if len(datasets) > 1:
-        dataset = torch.utils.data.ConcatDataset(datasets)
-        print("Training with multiple datasets", len(datasets))
-    else:
-        dataset = datasets[0]
 
-    # dataset = Dataset(root, augment=augment)
+    dataset = DatasetVoxelOccContactFile(root, root_raw)
     # split into train and validation sets
     val_size = int(val_split * len(dataset))
     train_size = len(dataset) - val_size
@@ -144,66 +143,55 @@ def create_train_val_loaders(root, root_raw, batch_size, val_split, augment, kwa
 
 
 def prepare_batch(batch, device):
-    tsdf, (label, rotations, width), index = batch
-    tsdf = tsdf.to(device)
+    pc, (label, width), pos, pos_occ, occ_value = batch
+    pc = pc.float().to(device)
     label = label.float().to(device)
-    label = (label > 0).float().to(device)
-    rotations = rotations.to(device)
-    width = width.to(device)
-    index = index.to(device)
-    return tsdf, (label, rotations, width), index
+    width = width.float().to(device)
+    pos.unsqueeze_(1) # B, 1, 3
+    pos = pos.float().to(device)
+    pos_occ = pos_occ.float().to(device)
+    occ_value = occ_value.float().to(device)
+    return pc, (label, width, occ_value), pos, pos_occ
 
 
-def select(out, index):
-    qual_out, rot_out, width_out = out
-    batch_index = torch.arange(qual_out.shape[0])
-    index = index.clip(0, 39)
-    label = qual_out[batch_index, :, index[:, 0], index[:, 1], index[:, 2]].squeeze()
-    rot = rot_out[batch_index, :, index[:, 0], index[:, 1], index[:, 2]]
-    width = width_out[batch_index, :, index[:, 0], index[:, 1], index[:, 2]].squeeze()
-    return label, rot, width
+def select(out):
+    qual_out, width_out, occ = out
+    occ = torch.sigmoid(occ) # to probability
+    return qual_out.squeeze(-1), width_out.squeeze(-1), occ
 
 
 def loss_fn(y_pred, y):
-    label_pred, rotation_pred, width_pred = y_pred
-    label, rotations, width = y
+    label_pred, width_pred, occ_pred = y_pred
+    label, width, occ = y
+    label_pred = label_pred.squeeze(1)
+ 
     loss_qual = _qual_loss_fn(label_pred, label)
-    loss_rot = _rot_loss_fn(rotation_pred, rotations)
     loss_width = _width_loss_fn(width_pred, width)
-    loss = loss_qual + label * (loss_rot + 0.01 * loss_width)
+    loss_occ = _occ_loss_fn(occ_pred, occ)
+    loss = loss_qual + label * (0.01 * loss_width) + loss_occ
     loss_dict = {'loss_qual': loss_qual.mean(),
-                 'loss_rot': loss_rot.mean(),
                  'loss_width': loss_width.mean(),
                  'loss_all': loss.mean()}
     return loss.mean(), loss_dict
 
 
 def _qual_loss_fn(pred, target):
-    return F.binary_cross_entropy(pred, target, reduction="none")
-
-
-def _rot_loss_fn(pred, target):
-    loss0 = _quat_loss_fn(pred, target[:, 0])
-    loss1 = _quat_loss_fn(pred, target[:, 1])
-    return torch.min(loss0, loss1)
-
-
-def _quat_loss_fn(pred, target):
-    return 1.0 - torch.abs(torch.sum(pred * target, dim=1))
-
+    return F.binary_cross_entropy(pred, target, reduction="none").mean()
 
 def _width_loss_fn(pred, target):
-    return F.mse_loss(pred, target, reduction="none")
+    return F.mse_loss(40 * pred, 40 * target, reduction="none").mean()
+
+def _occ_loss_fn(pred, target):
+    return F.binary_cross_entropy(pred, target, reduction="none").mean()
 
 
 def create_trainer(net, optimizer, loss_fn, metrics, device):
     def _update(_, batch):
         net.train()
         optimizer.zero_grad()
-
         # forward
-        x, y, index = prepare_batch(batch, device)
-        y_pred = select(net(x), index)
+        x, y, pos, pos_occ = prepare_batch(batch, device)
+        y_pred = select(net(x, pos, p_tsdf=pos_occ))
         loss, loss_dict = loss_fn(y_pred, y)
 
         # backward
@@ -224,8 +212,8 @@ def create_evaluator(net, loss_fn, metrics, device):
     def _inference(_, batch):
         net.eval()
         with torch.no_grad():
-            x, y, index = prepare_batch(batch, device)
-            y_pred = select(net(x), index)
+            x, y, pos, pos_occ = prepare_batch(batch, device)
+            y_pred = select(net(x, pos, p_tsdf=pos_occ))
             loss, loss_dict = loss_fn(y_pred, y)
         return x, y_pred, y, loss_dict
 
@@ -249,18 +237,19 @@ def create_summary_writers(net, device, log_dir):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--net", default="vgn")
+    parser.add_argument("--net", default="giga_contact")
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--dataset_raw", type=Path, required=True)
     parser.add_argument("--logdir", type=Path, default="data/runs")
     parser.add_argument("--description", type=str, default="")
     parser.add_argument("--savedir", type=str, default="")
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--val-split", type=float, default=0.1)
     parser.add_argument("--augment", action="store_true")
     parser.add_argument("--silence", action="store_true")
     parser.add_argument("--load-path", type=str, default='')
     args = parser.parse_args()
+    print(args)
     main(args)

@@ -40,9 +40,72 @@ class DatasetVoxel(torch.utils.data.Dataset):
         rotations[0] = ori.as_quat()
         rotations[1] = (ori * R).as_quat()
 
-        x, y = voxel_grid[0], (label, rotations, width)
+        x, y = voxel_grid[0], (label, width)
 
         return x, y, pos
+
+    def get_mesh(self, idx):
+        scene_id = self.df.loc[idx, "scene_id"]
+        mesh_pose_list_path = self.raw_root / 'mesh_pose_list' / (scene_id + '.npz')
+        mesh_pose_list = np.load(mesh_pose_list_path, allow_pickle=True)['pc']
+        scene = get_scene_from_mesh_pose_list(mesh_pose_list, return_list=False)
+        return scene
+
+class DatasetVoxelOccContactFile(torch.utils.data.Dataset):
+    def __init__(self, root, raw_root, num_point=2048, num_point_occ=2048, augment=False):
+        self.root = root
+        self.augment = augment
+        self.num_point = num_point  
+        self.num_point_occ = num_point_occ
+        self.raw_root = raw_root
+        self.num_th = 32
+        self.df = read_df_candidates(raw_root)
+        self.size, _, _, _ = read_setup(raw_root)
+
+    def __len__(self):
+        return len(self.df.index)
+
+    # /itet-stor/zrene/net_scratch/dataset/GIGA_packed_contact_grasps_1/
+    def __getitem__(self, i):
+
+        done = False
+        while not done:
+            scene_id = self.df.loc[i, "scene_id"]
+
+            pos = self.df.loc[i, "x":"z"].to_numpy(np.single)
+            width = self.df.loc[i, "width"].astype(np.single)
+            label = (self.df.loc[i, [f"label_{i}" for i in range(12)]] > 0).to_numpy(np.long)
+
+            try:
+                voxel_grid = read_voxel_grid(self.root, scene_id)
+                done=True
+            except FileNotFoundError as e:
+                i += 1
+                print("Did not find voxel grid for scene", scene_id, "next", i)
+                done = False
+                        
+        if self.augment:
+            voxel_grid, ori, pos = apply_transform(voxel_grid, ori, pos)
+        
+        pos = pos / self.size - 0.5
+        width = width / self.size
+
+        x, y = voxel_grid[0], (label, width)
+
+        occ_points, occ = self.read_occ(scene_id, self.num_point_occ)
+        occ_points = occ_points / self.size - 0.5
+        return x, y, pos, occ_points, occ
+
+    def read_occ(self, scene_id, num_point):
+        occ_paths = list((self.raw_root / 'occ' / scene_id).glob('*.npz'))
+        path_idx = torch.randint(high=len(occ_paths), size=(1,), dtype=int).item()
+        occ_path = occ_paths[path_idx]
+        occ_data = np.load(occ_path)
+        points = occ_data['points']
+        occ = occ_data['occ']
+        points, idxs = sample_point_cloud(points, num_point, return_idx=True)
+        occ = occ[idxs]
+        return points, occ
 
     def get_mesh(self, idx):
         scene_id = self.df.loc[idx, "scene_id"]
@@ -63,17 +126,26 @@ class DatasetVoxelOccFile(torch.utils.data.Dataset):
         self.df = read_df(raw_root)
         self.size, _, _, _ = read_setup(raw_root)
 
+
     def __len__(self):
         return len(self.df.index)
 
     def __getitem__(self, i):
-        scene_id = self.df.loc[i, "scene_id"]
-        ori = Rotation.from_quat(self.df.loc[i, "qx":"qw"].to_numpy(np.single))
-        pos = self.df.loc[i, "x":"z"].to_numpy(np.single)
-        width = self.df.loc[i, "width"].astype(np.single)
-        label = self.df.loc[i, "label"].astype(np.long)
-        voxel_grid = read_voxel_grid(self.root, scene_id)
-        
+        done = False
+        while not done:
+            scene_id = self.df.loc[i, "scene_id"]
+            ori = Rotation.from_quat(self.df.loc[i, "qx":"qw"].to_numpy(np.single))
+            pos = self.df.loc[i, "x":"z"].to_numpy(np.single)
+            width = self.df.loc[i, "width"].astype(np.single)
+            label = (self.df.loc[i, "label"] > 0).astype(np.long)
+            try:
+                voxel_grid = read_voxel_grid(self.root, scene_id)
+                done=True
+            except FileNotFoundError as e:
+                i += 1
+                print("Did not find voxel grid for scene", scene_id, "next", i)
+                done = False
+                
         if self.augment:
             voxel_grid, ori, pos = apply_transform(voxel_grid, ori, pos)
         
