@@ -12,7 +12,7 @@ from vgn.networks import load_network
 from vgn.utils import visual
 from vgn.utils.implicit import as_mesh
 
-LOW_TH = 0.5
+LOW_TH = 0.2 # 0.5 for giga
 
 class VGNImplicit(object):
     def __init__(self, model_path, model_type, best=False, force_detection=False, qual_th=0.9, out_th=0.5, visualize=False, resolution=40, **kwargs):
@@ -58,7 +58,7 @@ class VGNImplicit(object):
             colored_scene_mesh = visual.affordance_visual(qual_vol, rot_vol, scene_mesh, size, self.resolution, **aff_kwargs)
         grasps, scores = select(qual_vol.copy(), self.pos.view(self.resolution, self.resolution, self.resolution, 3).cpu(), rot_vol, width_vol, threshold=self.qual_th, force_detection=self.force_detection, max_filter_size=8 if self.visualize else 4)
         toc = time.time() - tic
-
+        
         grasps, scores = np.asarray(grasps), np.asarray(scores)
 
         new_grasps = []

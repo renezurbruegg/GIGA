@@ -4,26 +4,25 @@ from pathlib import Path
 from datetime import datetime
 import json
 import numpy as np
-
+from vgn.Mask3D import model
 
 import torch
 import tqdm
 from torch.utils.data.dataloader import default_collate
 
-from vgn.dataset_voxel_occ import DatasetVoxelOccGeo, DatasetVoxelOccGeoROI
+from vgn.dataset_voxel_occ import DatasetPointsOccGeo
 from vgn.networks import load_network
 
 from vgn.ConvONets.conv_onet.generation import Generator3D
 from vgn.utils.implicit import get_mesh_pose_list_from_world, get_scene_from_mesh_pose_list
 from vgn.ConvONets.eval import MeshEvaluator
-from vgn.ConvONets.utils.libmesh import check_mesh_contains
 from vgn.utils.misc import set_random_seed
 from vgn.ConvONets.common import compute_iou
 
 def main(args):
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
-    kwargs = {"num_workers": 8, "pin_memory": True} if use_cuda else {}
+    kwargs = {"num_workers": 0, "pin_memory": True} if use_cuda else {}
 
     # create log directory
     time_stamp = datetime.now().strftime("%y-%m-%d-%H-%M")
@@ -35,10 +34,13 @@ def main(args):
         args.description,
     ).strip(",")
     logdir = args.logdir / description
-    logdir.mkdir()
+    try:
+        logdir.mkdir()
+    except:
+        print("Folder already exists")
 
     # create data loaders
-    test_set, test_loader = create_test_loader(
+    test_set, test_loader, size = create_test_loader(
         args.dataset, args.dataset_raw, kwargs, args.ROI
     )
 
@@ -47,16 +49,8 @@ def main(args):
         'iou': [], 
         'chamfer-L1': [], 
         'normals accuracy': [], 
-        'chamfer-L2': [],
         'f-score': [],
-        'completeness': [],
-        'accuracy': [],
-        'completeness2': [],
-        'accuracy2': [],
-        'f-score-15': [], # threshold = 1.5%
-        'f-score-20': [], # threshold = 2.0%
-    }
-    
+        }
     if args.ROI:
         for name in ['iou', 'precision', 'recall']:
             mean_dict[name + '_ROI'] = []
@@ -71,6 +65,8 @@ def main(args):
         threshold=args.th,
         input_type='pointcloud',
         padding=0,
+        normalize = False,
+        size= size
     )
 
     with torch.no_grad():
@@ -131,16 +127,18 @@ def create_test_loader(root, root_raw, kwargs, ROI, num_point_occ=100000):
     if ROI:
         dataset = DatasetVoxelOccGeoROI(root, root_raw, num_point_occ=num_point_occ)
     else:
-        dataset = DatasetVoxelOccGeo(root, root_raw, num_point_occ=num_point_occ)
+        dataset = DatasetPointsOccGeo(root, root_raw, num_point_occ=num_point_occ, normalize = False)
+
     test_loader = torch.utils.data.DataLoader(
         dataset, batch_size=1, shuffle=False, drop_last=False, collate_fn=collate_fn, **kwargs
     )
     # it = iter(test_loader)
     # import pdb; pdb.set_trace()
-    return dataset, test_loader
+    return dataset, test_loader, dataset.size
 
 def predict_mesh(generator, pc_input):
     pred_mesh, _ = generator.generate_mesh({'inputs': pc_input})
+    import pdb; pdb.set_trace()
     return pred_mesh
 
 def eval_mesh(pred_mesh, gt_mesh, points_occ, occ):

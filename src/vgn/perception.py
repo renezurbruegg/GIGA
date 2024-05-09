@@ -107,10 +107,17 @@ class TSDFVolume(object):
         extrinsic = extrinsic.as_matrix()
         self._volume.integrate(rgbd, intrinsic, extrinsic)
 
+<<<<<<< HEAD
 
     def index_of(self, x, y, z):
         return x * self._volume.resolution*self._volume.resolution + y * self._volume.resolution + z
     
+=======
+    def index_of(self, x, y, z):
+        return x * self._volume.resolution*self._volume.resolution + y * self._volume.resolution + z
+    
+ 
+>>>>>>> db6565257b985374409b5b5ea998c267c4505172
     def get_grid(self):
         # TODO(mbreyer) very slow (~35 ms / 50 ms of the whole pipeline)
         shape = (1, self.resolution, self.resolution, self.resolution)
@@ -132,6 +139,7 @@ class TSDFVolume(object):
         #         }
         #     }
         # }
+<<<<<<< HEAD
         if o3d.__version__ > "0.13.0":
             print("getting grid the new way!")
             tsdf_vector = np.asarray(self._volume.extract_volume_tsdf()) # Needed to work with open3d > 0.14.1
@@ -153,7 +161,26 @@ class TSDFVolume(object):
             for voxel in voxels:
                 i, j, k = voxel.grid_index
                 tsdf_grid[0, i, j, k] = voxel.color[0]
+=======
+        # voxels = self._volume.extract_voxel_grid().get_voxels()
+        print("getting grid the new way!")
+        tsdf_vector = np.asarray(self._volume.extract_volume_tsdf()) # Needed to work with open3d > 0.14.1
+        for x in range(self.resolution):
+            for y in range(self.resolution):
+                for z in range(self.resolution):
+                    ind = self.index_of(x, y, z)
+                    tsdf_grid[0, x, y, z] = tsdf_vector[ind][0] # tsdf value
+        # return tsdf_grid
+        # print("getting grid th old way!")
+        # shape = (1, self.resolution, self.resolution, self.resolution)
+        # tsdf_grid = np.zeros(shape, dtype=np.float32)
+        # voxels = self._volume.extract_voxel_grid().get_voxels()
+        # for voxel in voxels:
+        #     i, j, k = voxel.grid_index
+        #     tsdf_grid[0, i, j, k] = voxel.color[0]
+>>>>>>> db6565257b985374409b5b5ea998c267c4505172
         return tsdf_grid
+        # print("done")
 
         # print("done")
         return tsdf_grid

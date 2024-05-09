@@ -161,6 +161,14 @@ def main(args, rank):
             for _ in range(args.grasps_per_scene):
                 # sample and evaluate a grasp point
                 point, normal = sample_grasp_point(pc, finger_depth)
+
+                    
+                print("DEBUG DRAWING")
+                point, normal = sample_grasp_point_contact(pc, horizontal_percentile=args.horizontal_percentile)
+
+  # draw line with contact points and surface normal using pybullet
+                sim.world.p.addUserDebugLine(point, point + normal*0.5, (1,0,0))
+
                 grasp, label, target = evaluate_grasp_point(sim, point, normal)
 
                 # store the sample
